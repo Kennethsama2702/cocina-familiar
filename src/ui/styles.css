@@ -99,6 +99,7 @@ textarea { resize: vertical; min-height: 72px; }
 .num { font-size: .85rem; font-weight: 600; color: var(--muted); width: 26px; height: 26px; display: grid; place-items: center; border-radius: 999px; }
 .today .num { background: var(--accent); color: var(--accent-ink); }
 .who { display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 11px; font-weight: 600; font-size: .92rem; min-width: 0; background: color-mix(in srgb, var(--c) 16%, var(--surface)); color: var(--ink); border: 1px solid color-mix(in srgb, var(--c) 35%, transparent); }
+.who.skipped { background: transparent; color: var(--muted); border: 1px dashed var(--line-strong); font-weight: 550; }
 .who .dot { width: 9px; height: 9px; border-radius: 99px; background: var(--c); flex: none; }
 .who .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who .ini { display: none; }
@@ -200,6 +201,9 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   .who .dot, .who .name { display: none; }
   .who .ini { display: block; color: #fff; font-weight: 700; font-size: .78rem; text-shadow: 0 1px 1px rgba(0,0,0,.25); }
   .cal-cell.past .who { opacity: .4; }
+  .who.skipped { background: transparent; border: 1px dashed var(--line-strong); }
+  .who.skipped .ini { color: var(--muted); text-shadow: none; }
+  .agenda .who.skipped .name { display: inline-block; }
   .meta { justify-content: center; gap: 2px; }
   .meta .tag { font-size: 0; width: 8px; height: 8px; padding: 0; border-radius: 99px; background: var(--faint); border: 0; }
   .meta .tag.mom { background: #8B7FB8; } .meta .tag.cover { background: #E0912F; } .meta .tag.comp { background: var(--ok); } .meta .tag.away { background: var(--err); }

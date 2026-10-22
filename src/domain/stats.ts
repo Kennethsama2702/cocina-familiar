@@ -38,6 +38,7 @@ export function computeStats(state: State, ctx: Ctx): Record<PersonId, PersonSta
   }
   const horizon = addDays(ctx.today, 30);
   for (const s of state.shifts) {
+    if (s.status === 'skipped') continue; // nadie cocinó: el turno se trasladó, no cuenta ni como asignado ni como hecho
     if (resolved(s, ctx) && s.date <= ctx.today) {
       const orig = out[s.original];
       if (orig) orig.assigned++;

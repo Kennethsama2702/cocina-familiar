@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { btree_gist } from '@electric-sql/pglite/contrib/btree_gist';
-import { addDays, dateInEcuador, setupRotation, addMomException, buildPlan, createAbsence, State, Shift } from '../../src/domain';
+import { addDays, dateInEcuador, setupRotation, addMomException, buildPlan, createAbsence, skipDay, State, Shift } from '../../src/domain';
 
 /**
  * Pruebas de seguridad contra un PostgreSQL real (PGlite) con la migración REAL.
@@ -163,6 +163,17 @@ describe('administrador', () => {
     await as('authenticated', ADMIN, async () => { await call(payload(await version(), plan)); });
     expect((await db.query('select * from public.absences')).rows).toHaveLength(1);
     expect((await loadShifts()).map((x) => [x.date, x.assignee, x.kind])).toEqual(r.state.shifts.map((x) => [x.date, x.assignee, x.kind]));
+  });
+
+  it('puede marcar "nadie cocinó hoy": el turno pasa a mañana y todo se corre un día (atómico)', async () => {
+    const before = stateOf(await loadShifts());
+    const r = skipDay(before, TODAY, 'Se cenó tarde', { today: TODAY });
+    const plan = buildPlan(before, r.state, r.event, { today: TODAY });
+    await as('authenticated', ADMIN, async () => { await call(payload(await version(), plan)); });
+    const after = await loadShifts();
+    expect(after.find((x) => x.date === TODAY)!.status).toBe('skipped');
+    expect(after).toHaveLength(before.shifts.length + 1);
+    expect(after.map((x) => [x.date, x.assignee, x.status])).toEqual(r.state.shifts.map((x) => [x.date, x.assignee, x.status]));
   });
 
   it('un cambio que falla a mitad se revierte por completo (atomicidad)', async () => {

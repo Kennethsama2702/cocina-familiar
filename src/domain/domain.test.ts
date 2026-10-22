@@ -24,6 +24,8 @@ import {
   scheduleCompensation,
   setupRotation,
   isAbsent,
+  skipDay,
+  undoSkipDay,
 } from './index';
 
 const ORDER = ['kenneth', 'eric', 'michael', 'marco'];
@@ -430,12 +432,86 @@ describe('estadísticas', () => {
     expect(stats[K]!.owes + stats[E]!.isOwed).toBe(0); // no quedan deudas
   });
 
-  it('un día marcado como no realizado no cuenta como limpieza hecha', () => {
+  it('un día en que nadie cocinó no cuenta ni como asignado ni como realizado', () => {
     const { state } = boot('2026-10-12', K, 20);
-    const r = markShift(state, { date: '2026-10-12', status: 'skipped', reason: 'nadie' }, ctxOf('2026-10-12')).state;
+    const r = markShift(state, { date: '2026-10-12', status: 'skipped', reason: 'se cenó tarde' }, ctxOf('2026-10-12')).state;
     const st = computeStats(r, ctxOf('2026-10-13'));
-    expect(st[K]!.assigned).toBe(1);
+    expect(st[K]!.assigned).toBe(0);
     expect(st[K]!.done).toBe(0);
+    // El turno de Kenneth se hace al día siguiente y ahí sí cuenta
+    const later = computeStats(r, ctxOf('2026-10-14'));
+    expect(later[K]!.assigned).toBe(1);
+    expect(later[K]!.done).toBe(1);
+  });
+});
+
+describe('día en que nadie cocina: el turno pasa al día siguiente y todo se corre un día', () => {
+  const MON = '2026-10-19';
+  it('hoy nadie cocina → quien le tocaba lo hace mañana y el resto se corre un día', () => {
+    const { state } = boot(MON); // K E M Ma K E M…
+    const ctx = ctxOf(MON);
+    const r = markShift(state, { date: MON, status: 'skipped', reason: 'Se cenó tarde' }, ctx).state;
+    const s0 = getShift(r, MON)!;
+    expect([s0.status, s0.assignee, s0.reason]).toEqual(['skipped', K, 'Se cenó tarde']);
+    expect(seq(r, addDays(MON, 1), 6)).toEqual([K, E, M, MA, K, E]); // mar K, mié E, jue M, vie Ma…
+    expect(r.shifts).toHaveLength(state.shifts.length + 1);
+    assertInvariants(r);
+  });
+
+  it('se acumula con mamá y con otros días sin cocina', () => {
+    const { state } = boot(MON);
+    const ctx = ctxOf(MON);
+    const a = skipDay(state, '2026-10-21', null, ctx).state; // mié (M) nadie cocina
+    const b = addMomException(a, '2026-10-24', null, ctx).state;
+    // sin nada, el 28/10 sería (9 días desde K) → E; con 2 desplazamientos → vuelve dos puestos atrás
+    expect(who(state, '2026-10-28')).toBe(E);
+    expect(who(b, '2026-10-28')).toBe(MA);
+    assertInvariants(b);
+  });
+
+  it('un día futuro también se puede marcar y se puede deshacer, dejando todo como estaba', () => {
+    const { state } = boot(MON);
+    const ctx = ctxOf(MON);
+    const a = skipDay(state, '2026-10-22', null, ctx).state;
+    expect(getShift(a, '2026-10-22')!.status).toBe('skipped');
+    const back = undoSkipDay(a, '2026-10-22', ctx).state;
+    expect(back.shifts.map((x) => [x.date, x.assignee, x.kind, x.status])).toEqual(state.shifts.map((x) => [x.date, x.assignee, x.kind, x.status]));
+  });
+
+  it('deshacer desde "hoy" con markShift(scheduled) también funciona', () => {
+    const { state } = boot(MON);
+    const ctx = ctxOf(MON);
+    const a = markShift(state, { date: MON, status: 'skipped' }, ctx).state;
+    const back = markShift(a, { date: MON, status: 'scheduled' }, ctx).state;
+    expect(back.shifts.map((x) => [x.date, x.assignee, x.status])).toEqual(state.shifts.map((x) => [x.date, x.assignee, x.status]));
+  });
+
+  it('no se puede en días pasados, sobre mamá ni sobre un día ya registrado', () => {
+    const { state } = boot(MON);
+    const ctx = ctxOf(MON);
+    expect(code(() => skipDay(state, '2026-10-18', null, ctxOf('2026-10-20')))).toBe('PAST_LOCKED');
+    const withMom = addMomException(state, '2026-10-21', null, ctx).state;
+    expect(code(() => skipDay(withMom, '2026-10-21', null, ctx))).toBe('CONFLICT');
+    const done = markShift(state, { date: MON, status: 'done' }, ctx).state;
+    expect(code(() => skipDay(done, MON, null, ctx))).toBe('CONFLICT');
+  });
+
+  it('el turno trasladado conserva su responsable original y no duplica compensaciones', () => {
+    const { state, ctx } = boot('2026-10-12', K, 60);
+    const withComp = changeAssignee(state, { date: '2026-10-14', newAssignee: E, reason: 'Examen', createCompensation: true }, ctx).state;
+    const skipped = skipDay(withComp, '2026-10-14', null, ctx).state;
+    const rows = skipped.shifts.filter((x) => x.generatesComp);
+    expect(rows).toHaveLength(1); // la compensación viaja con el turno trasladado
+    expect(rows[0]!.date).toBe('2026-10-15');
+    assertInvariants(skipped);
+  });
+
+  it('si el turno trasladado cae en un día de ausencia de esa persona, se recalcula sin asignar ausentes', () => {
+    const { state, ctx } = boot(MON);
+    const away = createAbsence(state, { person: K, start: '2026-10-20', end: '2026-10-20', reason: null }, [], ctx).state;
+    const r = skipDay(away, MON, null, ctx).state; // el turno de K de hoy pasaría al martes 20, cuando K viaja
+    for (const x of r.shifts) if (x.status === 'scheduled') expect(isAbsent(r, x.assignee, x.date)).toBe(false);
+    assertInvariants(r);
   });
 });
 
@@ -469,6 +545,9 @@ describe('invariantes bajo operaciones aleatorias (reproducible)', () => {
           } else if (pick < 0.7) {
             const abs = state.absences.find((a) => !a.cancelled);
             if (abs) state = cancelAbsence(state, abs.id, ctx).state;
+          } else if (pick < 0.78) {
+            const sk = state.shifts.find((x) => x.status === 'skipped' && x.date >= ctx.today);
+            state = sk && r() < 0.4 ? undoSkipDay(state, sk.date, ctx).state : skipDay(state, date, null, ctx).state;
           } else if (pick < 0.85) {
             const pending = state.comps.find((c) => c.status === 'pending');
             if (pending) {

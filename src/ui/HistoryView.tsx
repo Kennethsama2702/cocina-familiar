@@ -55,7 +55,7 @@ export function HistoryView({ snap, people, admin }: { snap: Snapshot; people: P
                   if (s.kind === 'manual') details.push('Cambio manual');
                   if (s.kind === 'compensation') details.push('Recupera su turno');
                   if (s.generatesComp) { const c = compById.get(s.generatesComp); if (c) details.push(`Compensación ${c.status === 'done' ? 'realizada' : c.status === 'cancelled' ? 'cancelada' : 'pendiente'}`); }
-                  if (s.status === 'skipped') details.push('Nadie la hizo');
+                  if (s.status === 'skipped') details.push('Nadie cocinó: el turno pasó al día siguiente');
                   if (s.status === 'scheduled') details.push('Sin registro: se da por hecha');
                   if (s.status === 'done' && s.performedBy !== s.assignee) details.push(`Asignada a ${n(s.assignee)}`);
                   if (showReason && s.reason) details.push(`“${s.reason}”`);

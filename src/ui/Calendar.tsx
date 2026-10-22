@@ -10,7 +10,7 @@ export function describeShift(s: Shift | undefined, people: People, today: strin
   if (s.kind === 'cover') parts.push(`adelantado por un viaje (le tocaba a ${n(s.original)})`);
   if (s.kind === 'compensation') parts.push('recupera su turno');
   if (s.status === 'done') parts.push('realizada');
-  if (s.status === 'skipped') parts.push('no realizada');
+  if (s.status === 'skipped') parts.splice(0, 1, 'nadie cocinó (el turno pasó al día siguiente)');
   if (s.date < today) parts.push('día pasado');
   return parts.join(', ');
 }
@@ -62,7 +62,7 @@ export function Calendar({ month, state, people, today, canEdit, selected, onSel
     if (s?.kind === 'manual') tags.push({ k: 'man', cls: 'cover', text: s.assignee === 'mom' ? `cubre a ${people[s.original]?.name ?? ''}` : `era ${people[s.original]?.name ?? ''}`, icon: 'swap' });
     if (s?.generatesComp) tags.push({ k: 'gen', cls: 'comp', text: 'Debe compensar' });
     if (s?.status === 'done') tags.push({ k: 'done', cls: 'done', text: 'Hecha', icon: 'check' });
-    if (s?.status === 'skipped') tags.push({ k: 'skip', cls: 'skip', text: 'No se hizo' });
+    if (s?.status === 'skipped') tags.push({ k: 'skip', cls: 'skip', text: 'Nadie cocinó' });
     // Para no saturar, la etiqueta "fuera" solo aparece el primer día de la ausencia y cada lunes.
     for (const p of absentOn.get(d) ?? []) {
       const startsHere = state.absences.some((a) => !a.cancelled && a.person === p && a.start === d);
@@ -98,7 +98,9 @@ export function Calendar({ month, state, people, today, canEdit, selected, onSel
               aria-disabled={past ? true : undefined}
             >
               <span className="num">{Number(d.slice(8))}</span>
-              {s && <Who person={people[s.assignee]} />}
+              {s && (s.status === 'skipped'
+                ? <span className="who skipped"><span className="name">Sin cocina</span><span className="ini" aria-hidden="true">–</span></span>
+                : <Who person={people[s.assignee]} />)}
               {tags.length > 0 && (
                 <span className="meta">
                   {tags.map((t) => (
@@ -120,7 +122,7 @@ export function Calendar({ month, state, people, today, canEdit, selected, onSel
           return (
             <button key={d} className={`agenda-item${past ? ' past' : ''}${d === today ? ' today' : ''}`} onClick={() => onSelect(d)}>
               <span className="d">{formatShortDay(d)}</span>
-              <span className="grow"><Who person={people[s.assignee]} /></span>
+              <span className="grow">{s.status === 'skipped' ? <span className="who skipped"><span className="name">Sin cocina</span></span> : <Who person={people[s.assignee]} />}</span>
               <span className="muted small">{s.kind === 'mom' ? 'Excepción' : s.kind === 'cover' ? 'Adelantado' : s.kind === 'compensation' ? 'Recupera' : s.status === 'done' ? 'Hecha' : ''}</span>
             </button>
           );

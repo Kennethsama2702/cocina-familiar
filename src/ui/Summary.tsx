@@ -18,7 +18,16 @@ export function Summary({ snap, people }: { snap: Snapshot; people: People }) {
     <aside className="side" aria-label="Resumen">
       <div className="card stack">
         <h2>Ahora</h2>
-        {todayShift && (
+        {todayShift && todayShift.status === 'skipped' && (
+          <div className="next-big" style={cssVar('#9aa1ad')}>
+            <div>
+              <div className="muted small">Hoy · {formatShort(today)}</div>
+              <div style={{ fontWeight: 650, fontSize: '1.1rem' }}>Hoy nadie cocinó</div>
+              <div className="small muted">El turno de {n(todayShift.assignee)} pasó a mañana</div>
+            </div>
+          </div>
+        )}
+        {todayShift && todayShift.status !== 'skipped' && (
           <div className="next-big" style={cssVar(people[todayShift.assignee]?.color ?? '#999')}>
             <Avatar person={people[todayShift.assignee]} />
             <div>

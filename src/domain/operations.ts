@@ -371,23 +371,14 @@ export function markShift(state: State, input: MarkInput, ctx: Ctx): OpResult {
 
   if (input.status === 'scheduled') {
     if (row.status === 'scheduled') throw new DomainError('INVALID', 'Ese día no tiene registro que deshacer.');
+    if (row.status === 'skipped') return undoSkipDay(state, input.date, ctx);
     row.status = 'scheduled';
     row.performedBy = null;
     if (settle && settle.status === 'done') settle.status = 'scheduled';
     return finish(s, ev('performed', `${formatShort(row.date)}: registro deshecho`, null, row.date));
   }
 
-  if (input.status === 'skipped') {
-    row.status = 'skipped';
-    row.performedBy = null;
-    row.reason = row.reason ?? (input.reason?.trim() || null);
-    if (settle) {
-      settle.status = 'pending';
-      row.settlesComp = null;
-      row.kind = 'manual';
-    }
-    return finish(s, ev('performed', `${formatShort(row.date)}: nadie realizó la cocina`, input.reason?.trim() || null, row.date));
-  }
+  if (input.status === 'skipped') return skipDay(state, input.date, input.reason ?? null, ctx);
 
   const performer = input.performedBy ?? row.assignee;
   if (performer !== MOM) assertRotationPerson(s, performer);
@@ -418,6 +409,65 @@ export function markShift(state: State, input: MarkInput, ctx: Ctx): OpResult {
       row.date,
     ),
   );
+}
+
+/* ------------------------------------------------------------------ */
+/* Día en que nadie cocina                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ese día nadie cocina (se cenó tarde, etc.): el turno de quien le tocaba pasa al DÍA SIGUIENTE y
+ * toda la rotación posterior se corre un día, igual que con una excepción de mamá.
+ * El día queda registrado como "nadie cocinó" y no cuenta como tarea asignada ni realizada.
+ */
+export function skipDay(state: State, date: string, reason: string | null, ctx: Ctx): OpResult {
+  assertEditable(date, ctx);
+  const s = cloneState(state);
+  const idx = s.shifts.findIndex((r) => r.date === date);
+  if (idx < 0) throw new DomainError('NOT_FOUND', 'Fecha fuera del calendario.');
+  const row = s.shifts[idx]!;
+  if (row.kind === 'mom') throw new DomainError('CONFLICT', 'Ese día cocina mamá: para quitarlo cancela la excepción de mamá.');
+  if (row.status !== 'scheduled') throw new DomainError('CONFLICT', 'Ese día ya tiene un registro. Deshazlo primero.');
+  const why = reason?.trim() || null;
+  const owner = row.assignee;
+  // El turno se repite al día siguiente (mismo responsable); las compensaciones enlazadas viajan con él.
+  const carried: Shift = { ...row, date: addDays(date, 1), status: 'scheduled', performedBy: null };
+  row.generatesComp = null;
+  row.settlesComp = null;
+  row.status = 'skipped';
+  row.performedBy = null;
+  row.reason = why;
+  for (let i = idx + 1; i < s.shifts.length; i++) s.shifts[i]!.date = addDays(s.shifts[i]!.date, 1);
+  s.shifts.splice(idx + 1, 0, carried);
+  reconcile(s, ctx);
+  return finish(
+    s,
+    ev('performed', `${formatShort(date)}: nadie cocina; el turno de ${nm(ctx, owner)} pasa al día siguiente y toda la rotación se corre un día`, why, date),
+  );
+}
+
+/** Deshace "nadie cocinó": el turno vuelve a ese día y la rotación posterior se adelanta un día. */
+export function undoSkipDay(state: State, date: string, ctx: Ctx): OpResult {
+  assertEditable(date, ctx);
+  const s = cloneState(state);
+  const idx = s.shifts.findIndex((r) => r.date === date);
+  const row = s.shifts[idx];
+  if (!row || row.status !== 'skipped') throw new DomainError('NOT_FOUND', 'Ese día no está marcado como "nadie cocinó".');
+  const next = s.shifts[idx + 1];
+  if (!next || next.status !== 'scheduled' || next.slot !== row.slot || next.original !== row.original) {
+    throw new DomainError('CONFLICT', 'No se puede deshacer automáticamente: el día siguiente ya cambió.');
+  }
+  row.status = 'scheduled';
+  row.assignee = next.assignee;
+  row.kind = next.kind;
+  row.absenceId = next.absenceId;
+  row.reason = next.reason;
+  row.generatesComp = next.generatesComp;
+  row.settlesComp = next.settlesComp;
+  s.shifts.splice(idx + 1, 1);
+  for (let i = idx + 1; i < s.shifts.length; i++) s.shifts[i]!.date = addDays(s.shifts[i]!.date, -1);
+  reconcile(s, ctx);
+  return finish(s, ev('performed', `${formatShort(date)}: se deshizo "nadie cocinó"; el turno vuelve a ese día`, null, date));
 }
 
 /* ------------------------------------------------------------------ */
