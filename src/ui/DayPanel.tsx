@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
-  MOM, Ctx, OpResult, Plan, State, addMomException, cancelMomException, changeAssignee, compViews, formatLong, getShift, isAbsent, markShift, momCoversAbsentTurn, skipDay, undoSkipDay,
+  MOM, Ctx, OpResult, Participant, Plan, State, addMomException, cancelMomException, changeAssignee, compViews, formatLong, getShift, isAbsent, markShift, momCoversAbsentTurn, skipDay, undoSkipDay, morningCandidate, cookedInMorning, undoMorning,
 } from '../domain';
 import { Snapshot } from '../data/repository';
 import { Avatar, Confirm, Dialog, Icon, People } from './common';
 
-export type Run = (op: (s: State, c: Ctx) => OpResult, ok: string, settings?: Plan['settings']) => Promise<boolean>;
+export type Run = (op: (s: State, c: Ctx) => OpResult, ok: string, settings?: Plan['settings'], participants?: Participant[]) => Promise<boolean>;
 
 interface Props {
   date: string;
@@ -29,7 +29,8 @@ export function DayPanel({ date, snap, people, busy, run, onClose, onAbsence, on
   const past = date < today;
   const isToday = date === today;
   const editable = admin && !past && !!shift;
-  const [mode, setMode] = useState<null | 'change' | 'done' | 'mom' | 'cancelMom' | 'skip'>(null);
+  const [mode, setMode] = useState<null | 'change' | 'done' | 'mom' | 'cancelMom' | 'skip' | 'morning'>(null);
+  const morning = morningCandidate(state, date);
   const ownerAway = !!shift && isAbsent(state, shift.original, date);
   const n = (id: string | null) => (id ? people[id]?.name ?? id : '—');
   const comps = useMemo(() => compViews(state), [state]);
@@ -51,6 +52,7 @@ export function DayPanel({ date, snap, people, busy, run, onClose, onAbsence, on
       <div className="stack-sm">
         <div className="kv"><span className="muted">Responsable original</span><strong>{n(shift.original)}</strong></div>
         {shift.status === 'done' && <div className="kv"><span className="muted">La realizó</span><strong>{n(shift.performedBy)}</strong></div>}
+        {shift.morningBy && <div className="note ok">El turno pendiente de ayer lo cocinó {n(shift.morningBy)} por la mañana; la rotación volvió a la original.</div>}
         {shift.status === 'skipped' && <div className="note">Ese día nadie cocinó. El turno de {n(shift.assignee)} pasó al día siguiente y la rotación se corrió un día.</div>}
         {past && shift.status === 'scheduled' && <div className="kv"><span className="muted">Estado</span><span>Sin registro (se cuenta como hecha por {n(shift.assignee)})</span></div>}
         {shift.reason && <div className="kv"><span className="muted">Motivo</span><span style={{ textAlign: 'right' }}>{shift.reason}</span></div>}
@@ -65,6 +67,12 @@ export function DayPanel({ date, snap, people, busy, run, onClose, onAbsence, on
             {isToday && shift.status === 'scheduled' && <button className="btn primary" onClick={() => setMode('done')}><Icon name="check" /> Registrar quién la hizo hoy</button>}
             {shift.status === 'skipped' && (
               <button className="btn" disabled={busy} onClick={() => void run((s, c) => undoSkipDay(s, date, c), 'Listo: ese día sí se cocina.').then((ok) => ok && onClose())}><Icon name="undo" /> Deshacer: ese día sí se cocina</button>
+            )}
+            {morning && shift.status === 'scheduled' && (
+              <button className="btn primary" onClick={() => setMode('morning')}><Icon name="check" /> {n(morning.owner)} lo hizo en la mañana (vuelve la rotación original)</button>
+            )}
+            {shift.morningBy && (
+              <button className="btn" disabled={busy} onClick={() => void run((s, c) => undoMorning(s, date, c), 'Registro de la mañana deshecho.').then((ok) => ok && onClose())}><Icon name="undo" /> Deshacer: cocinó en la mañana</button>
             )}
             {isToday && shift.status === 'done' && (
               <button className="btn" disabled={busy} onClick={() => void run((s, c) => markShift(s, { date, status: 'scheduled' }, c), 'Registro deshecho.')}><Icon name="undo" /> Deshacer el registro</button>
@@ -89,6 +97,7 @@ export function DayPanel({ date, snap, people, busy, run, onClose, onAbsence, on
       {editable && mode === 'mom' && (
         <MomForm date={date} snap={snap} people={people} busy={busy} run={run} onBack={() => setMode(null)} onDone={onClose} />
       )}
+      {editable && mode === 'morning' && morning && <MorningForm date={date} owner={morning.owner} snap={snap} people={people} busy={busy} run={run} onBack={() => setMode(null)} onDone={onClose} />}
       {editable && mode === 'skip' && <SkipForm date={date} snap={snap} people={people} busy={busy} run={run} onBack={() => setMode(null)} onDone={onClose} />}
       {editable && mode === 'cancelMom' && (
         <Confirm
@@ -239,6 +248,26 @@ function SkipForm({ date, snap, people, busy, run, onBack, onDone }: Omit<Props,
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} data-autofocus />
       </label>
       <div className="row between"><button type="button" className="btn" onClick={onBack} disabled={busy}>Atrás</button><button className="btn primary">Continuar</button></div>
+    </form>
+  );
+}
+
+function MorningForm({ date, owner, snap, people, busy, run, onBack, onDone }: Omit<Props, 'onClose' | 'onAbsence' | 'onSchedule'> & { owner: string; onBack: () => void; onDone: () => void }) {
+  const [by, setBy] = useState(owner);
+  const shift = getShift(snap.state, date)!;
+  return (
+    <form className="section" onSubmit={(e) => { e.preventDefault(); void run((s, c) => cookedInMorning(s, date, by, c), 'Listo: la rotación volvió a la original.').then((ok) => ok && onDone()); }}>
+      <h3>Cocinó en la mañana</h3>
+      <p className="muted small">
+        Ayer nadie cocinó por la noche y el turno de {people[owner]?.name} pasó a hoy. Si lo cocinó esta mañana, ese turno queda cumplido,
+        {' '}<strong>{people[shift.assignee]?.name} sigue cocinando hoy por la noche</strong> y el resto de la rotación vuelve a ser la original.
+      </p>
+      <label className="field">Quién cocinó en la mañana
+        <select value={by} onChange={(e) => setBy(e.target.value)} data-autofocus>
+          {snap.state.order.map((id) => <option key={id} value={id}>{people[id]?.name}{id === owner ? ' (le tocaba)' : ''}</option>)}
+        </select>
+      </label>
+      <div className="row between"><button type="button" className="btn" onClick={onBack} disabled={busy}>Atrás</button><button className="btn primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar'}</button></div>
     </form>
   );
 }

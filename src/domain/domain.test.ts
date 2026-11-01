@@ -26,6 +26,9 @@ import {
   isAbsent,
   skipDay,
   undoSkipDay,
+  cookedInMorning,
+  undoMorning,
+  addRotationMember,
 } from './index';
 
 const ORDER = ['kenneth', 'eric', 'michael', 'marco'];
@@ -575,5 +578,67 @@ describe('invariantes bajo operaciones aleatorias (reproducible)', () => {
         }
       }
     }
+  });
+});
+
+describe('cocinó por la mañana', () => {
+  // 2026-10-21 es miércoles (M). Se marca "nadie cocinó" y al día siguiente se registra la mañana.
+  const base = () => boot('2026-10-21', M);
+  it('devuelve la rotación exactamente a la original', () => {
+    const { state, ctx } = base();
+    const original = seq(state, '2026-10-21', 12);
+    const sk = skipDay(state, '2026-10-21', null, ctx).state;
+    expect(who(sk, '2026-10-22')).toBe(M); // el turno se trasladó
+    const r = cookedInMorning(sk, '2026-10-22', null, { today: '2026-10-22' }).state;
+    assertInvariants(r);
+    expect(getShift(r, '2026-10-22')!.morningBy).toBe(M);
+    // desde el día 22 en adelante coincide con la rotación original (el 21 queda como "nadie cocinó")
+    expect(seq(r, '2026-10-22', 11)).toEqual(original.slice(1));
+  });
+  it('se puede deshacer', () => {
+    const { state, ctx } = base();
+    const c2 = { today: '2026-10-22' };
+    const sk = skipDay(state, '2026-10-21', null, ctx).state;
+    const m = cookedInMorning(sk, '2026-10-22', null, c2).state;
+    const u = undoMorning(m, '2026-10-22', c2).state;
+    expect(u.shifts).toEqual(sk.shifts);
+  });
+  it('solo aplica el día siguiente a un "nadie cocinó"', () => {
+    const { state, ctx } = base();
+    expect(code(() => cookedInMorning(state, '2026-10-22', null, ctx))).toBe('INVALID');
+    expect(code(() => undoMorning(state, '2026-10-22', ctx))).toBe('NOT_FOUND');
+    const sk = skipDay(state, '2026-10-21', null, ctx).state;
+    expect(code(() => cookedInMorning(sk, '2026-10-22', null, { today: '2026-10-23' }))).toBe('PAST_LOCKED');
+  });
+  it('permite que otra persona la haya cocinado y cuenta en estadísticas una sola vez', () => {
+    const { state, ctx } = base();
+    const c2 = { today: '2026-10-22' };
+    const sk = skipDay(state, '2026-10-21', null, ctx).state;
+    const m = cookedInMorning(sk, '2026-10-22', E, c2).state;
+    expect(getShift(m, '2026-10-22')!.morningBy).toBe(E);
+    const st = computeStats(m, { today: '2026-10-23' });
+    expect(st[E]!.done).toBe(1); // solo la mañana del día 22 (su turno es el 24)
+    expect(st[M]!.assigned).toBe(1); // era el turno de M…
+    expect(st[M]!.notDoneByMe).toBe(1); // …pero lo cocinó E
+  });
+});
+
+describe('alta de integrantes', () => {
+  it('incorpora a Alejandro al final y respeta el pasado', () => {
+    const { state, ctx } = boot('2026-10-12');
+    const before = JSON.stringify(state.shifts.filter((x) => x.date < '2026-10-14'));
+    const r = addRotationMember(state, { id: 'alejandro', afterId: null, from: '2026-10-14', startPerson: 'alejandro' }, { ...ctx, names: { alejandro: 'Alejandro' } });
+    assertInvariants(r.state);
+    expect(r.state.order).toEqual([...ORDER, 'alejandro']);
+    expect(JSON.stringify(r.state.shifts.filter((x) => x.date < '2026-10-14'))).toBe(before);
+    expect(seq(r.state, '2026-10-14', 6)).toEqual(['alejandro', K, E, M, MA, 'alejandro']);
+  });
+  it('permite elegir posición y rechaza duplicados', () => {
+    const { state, ctx } = boot('2026-10-12');
+    const r = addRotationMember(state, { id: 'alejandro', afterId: E, from: '2026-10-12', startPerson: K }, ctx);
+    expect(r.state.order).toEqual([K, E, 'alejandro', M, MA]);
+    expect(code(() => addRotationMember(state, { id: K, afterId: null, from: '2026-10-12', startPerson: K }, ctx))).toBe('DUPLICATE');
+    expect(code(() => addRotationMember(state, { id: 'x', afterId: 'zzz', from: '2026-10-12', startPerson: K }, ctx))).toBe('INVALID');
+    expect(code(() => addRotationMember(state, { id: 'x', afterId: null, from: '2026-10-01', startPerson: K }, ctx))).toBe('PAST_LOCKED');
   });
 });

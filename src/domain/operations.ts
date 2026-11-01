@@ -431,7 +431,7 @@ export function skipDay(state: State, date: string, reason: string | null, ctx: 
   const why = reason?.trim() || null;
   const owner = row.assignee;
   // El turno se repite al día siguiente (mismo responsable); las compensaciones enlazadas viajan con él.
-  const carried: Shift = { ...row, date: addDays(date, 1), status: 'scheduled', performedBy: null };
+  const carried: Shift = { ...row, date: addDays(date, 1), status: 'scheduled', performedBy: null, morningBy: null };
   row.generatesComp = null;
   row.settlesComp = null;
   row.status = 'skipped';
@@ -468,6 +468,119 @@ export function undoSkipDay(state: State, date: string, ctx: Ctx): OpResult {
   for (let i = idx + 1; i < s.shifts.length; i++) s.shifts[i]!.date = addDays(s.shifts[i]!.date, -1);
   reconcile(s, ctx);
   return finish(s, ev('performed', `${formatShort(date)}: se deshizo "nadie cocinó"; el turno vuelve a ese día`, null, date));
+}
+
+/* ------------------------------------------------------------------ */
+/* Cocinó por la mañana el turno que quedó pendiente                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ¿Se puede registrar que el turno pendiente de ayer se cocinó esta mañana?
+ * Requiere que ayer esté marcado "nadie cocinó" y que `date` contenga el turno trasladado.
+ */
+export function morningCandidate(state: State, date: string): { owner: PersonId } | null {
+  const prev = getShiftSafe(state, addDays(date, -1));
+  const row = getShiftSafe(state, date);
+  if (!prev || !row) return null;
+  if (prev.status !== 'skipped' || row.kind === 'mom' || row.status !== 'scheduled' || row.morningBy) return null;
+  if (row.slot !== prev.slot || row.original !== prev.original) return null;
+  return { owner: prev.assignee };
+}
+
+function getShiftSafe(state: State, date: string): Shift | undefined {
+  return state.shifts.find((r) => r.date === date);
+}
+
+/**
+ * Ayer nadie cocinó por la noche y el turno se trasladó a hoy; pero ese turno se cocinó esta MAÑANA.
+ * Entonces el turno trasladado desaparece y la rotación vuelve a ser exactamente la original:
+ * quien le tocaba esta noche sigue igual, y el resto también.
+ */
+export function cookedInMorning(state: State, date: string, by: PersonId | null, ctx: Ctx): OpResult {
+  assertEditable(date, ctx);
+  const s = cloneState(state);
+  const cand = morningCandidate(s, date);
+  if (!cand) throw new DomainError('INVALID', 'Solo aplica al día siguiente de un "nadie cocinó", cuando el turno trasladado sigue pendiente.');
+  const who = by ?? cand.owner;
+  if (who !== MOM) assertRotationPerson(s, who);
+  const idx = s.shifts.findIndex((r) => r.date === date);
+  s.shifts.splice(idx, 1);
+  for (let i = idx; i < s.shifts.length; i++) s.shifts[i]!.date = addDays(s.shifts[i]!.date, -1);
+  const next = s.shifts[idx];
+  if (!next) throw new DomainError('INVALID', 'No hay un día siguiente en el calendario.');
+  next.morningBy = who;
+  reconcile(s, ctx);
+  return finish(
+    s,
+    ev(
+      'performed',
+      `${formatShort(date)}: ${nm(ctx, who)} cocinó por la mañana el turno pendiente de ayer; la rotación vuelve a la original`,
+      null,
+      date,
+    ),
+  );
+}
+
+/** Deshace "cocinó por la mañana": el turno vuelve a quedar pendiente hoy y la rotación se corre un día. */
+export function undoMorning(state: State, date: string, ctx: Ctx): OpResult {
+  assertEditable(date, ctx);
+  const s = cloneState(state);
+  const idx = s.shifts.findIndex((r) => r.date === date);
+  const row = s.shifts[idx];
+  const prev = s.shifts[idx - 1];
+  if (!row || !row.morningBy || !prev || prev.status !== 'skipped') {
+    throw new DomainError('NOT_FOUND', 'Ese día no tiene un registro de "cocinó por la mañana".');
+  }
+  if (row.status !== 'scheduled') throw new DomainError('CONFLICT', 'Ese día ya tiene un registro; deshazlo primero.');
+  const carried: Shift = {
+    ...prev, date, status: 'scheduled', performedBy: null, reason: null,
+    generatesComp: null, settlesComp: null, morningBy: null,
+  };
+  for (let i = idx; i < s.shifts.length; i++) s.shifts[i]!.date = addDays(s.shifts[i]!.date, 1);
+  row.morningBy = null;
+  s.shifts.splice(idx, 0, carried);
+  reconcile(s, ctx);
+  return finish(s, ev('performed', `${formatShort(date)}: se deshizo "cocinó por la mañana"; el turno vuelve a estar pendiente hoy`, null, date));
+}
+
+/* ------------------------------------------------------------------ */
+/* Integrantes de la rotación                                         */
+/* ------------------------------------------------------------------ */
+
+export interface AddMemberInput {
+  id: PersonId;
+  /** Se coloca justo después de esta persona; null = al final del orden. */
+  afterId: PersonId | null;
+  /** Desde qué día rige el nuevo orden (hoy o futuro). */
+  from: string;
+  /** Quién cocina ese primer día. */
+  startPerson: PersonId;
+}
+
+/** Orden resultante al incorporar a alguien (para mostrar la vista previa y guardar sort_order). */
+export function orderWith(order: PersonId[], id: PersonId, afterId: PersonId | null): PersonId[] {
+  const next = [...order];
+  const i = afterId ? next.indexOf(afterId) : next.length - 1;
+  next.splice(i + 1, 0, id);
+  return next;
+}
+
+/**
+ * Incorpora a una persona a la rotación. Desde `from` se vuelve a generar la rotación futura con el
+ * nuevo orden; los días pasados no se tocan. Las ausencias registradas se siguen respetando.
+ */
+export function addRotationMember(state: State, input: AddMemberInput, ctx: Ctx): OpResult {
+  if (state.order.includes(input.id) || input.id === MOM) throw new DomainError('DUPLICATE', 'Esa persona ya forma parte de la rotación.');
+  if (input.afterId && !state.order.includes(input.afterId)) throw new DomainError('INVALID', 'La persona de referencia no pertenece a la rotación.');
+  const order = orderWith(state.order, input.id, input.afterId);
+  const name = nm(ctx, input.id);
+  const res = rebuildFuture({ ...state, order }, input.from, input.startPerson, `Se incorporó ${name}`, ctx);
+  res.event = {
+    ...res.event,
+    summary: `${name} se une a la rotación desde ${formatShort(input.from)}; orden: ${order.map((p) => nm(ctx, p)).join(' → ')}`,
+    reason: null,
+  };
+  return res;
 }
 
 /* ------------------------------------------------------------------ */

@@ -42,6 +42,7 @@ export function rotationShift(date: string, slot: PersonId): Shift {
     absenceId: null,
     generatesComp: null,
     settlesComp: null,
+    morningBy: null,
   };
 }
 
@@ -58,6 +59,7 @@ export function momShift(date: string, reason: string | null): Shift {
     absenceId: null,
     generatesComp: null,
     settlesComp: null,
+    morningBy: null,
   };
 }
 

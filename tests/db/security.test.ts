@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { btree_gist } from '@electric-sql/pglite/contrib/btree_gist';
@@ -31,7 +31,7 @@ async function fails(role: 'anon' | 'authenticated', uid: string | null, sql: st
 
 const rowOf = (s: Shift) => ({
   date: s.date, slot_id: s.slot, assignee_id: s.assignee, original_id: s.original, performed_by: s.performedBy,
-  status: s.status, kind: s.kind, reason: s.reason, absence_id: s.absenceId, generates_comp: s.generatesComp, settles_comp: s.settlesComp,
+  status: s.status, kind: s.kind, reason: s.reason, absence_id: s.absenceId, generates_comp: s.generatesComp, settles_comp: s.settlesComp, morning_by: s.morningBy,
 });
 function payload(version: number, plan: ReturnType<typeof buildPlan>) {
   return {
@@ -52,8 +52,16 @@ async function loadShifts(): Promise<Shift[]> {
   return r.rows.map((x) => ({
     date: x.date instanceof Date ? x.date.toISOString().slice(0, 10) : x.date, slot: x.slot_id, assignee: x.assignee_id, original: x.original_id,
     performedBy: x.performed_by, status: x.status, kind: x.kind, reason: x.reason, absenceId: x.absence_id,
-    generatesComp: x.generates_comp, settlesComp: x.settles_comp,
+    generatesComp: x.generates_comp, settlesComp: x.settles_comp, morningBy: x.morning_by ?? null,
   }));
+}
+async function loadState(order: string[]): Promise<State> {
+  const ab = await db.query<any>('select * from public.absences');
+  const iso = (d: any) => (d instanceof Date ? d.toISOString().slice(0, 10) : d);
+  return {
+    order, shifts: await loadShifts(), comps: [],
+    absences: ab.rows.map((a) => ({ id: a.id, person: a.person_id, start: iso(a.start_date), end: iso(a.end_date), reason: a.reason, cancelled: a.cancelled })),
+  };
 }
 const stateOf = (shifts: Shift[]): State => ({ order: ORDER, shifts, absences: [], comps: [] });
 const call = (p: unknown) => db.query('select public.apply_change($1::jsonb) as r', [JSON.stringify(p)]);
@@ -68,7 +76,7 @@ beforeAll(async () => {
     grant usage on schema public, auth to anon, authenticated;
     grant execute on function auth.uid() to anon, authenticated;
   `);
-  await db.exec(readFileSync('supabase/migrations/0001_init.sql', 'utf8'));
+  for (const f of readdirSync('supabase/migrations').sort()) await db.exec(readFileSync(`supabase/migrations/${f}`, 'utf8'));
   await db.exec(`insert into auth.users values ('${ADMIN}', 'admin@x.com'), ('${STRANGER}', 'otro@x.com');
                  insert into public.admins (user_id) values ('${ADMIN}')`);
   TODAY = dateInEcuador(new Date());
@@ -273,5 +281,78 @@ describe('días pasados (bloqueo en la base de datos)', () => {
       await call({ expected_version: v, shifts: [{ ...rowOf(today), assignee_id: other, kind: 'manual', reason: 'prueba' }] });
     });
     expect((await loadShifts()).find((s) => s.date === TODAY)!.assignee).toBe(other);
+  });
+});
+
+describe('integrantes nuevos y "cocinó por la mañana"', () => {
+  const part = (o: Record<string, unknown> = {}) => ({ id: 'alejandro', name: 'Alejandro', color: '#336699', in_rotation: true, sort_order: 5, ...o });
+
+  it('solo el administrador puede añadir integrantes', async () => {
+    const v = await version();
+    expect(await fails('authenticated', STRANGER, `select public.apply_change($1::jsonb)`, [JSON.stringify({ expected_version: v, participants: [part()] })])).toMatch(/FORBIDDEN/);
+    expect(await fails('anon', null, `select public.apply_change($1::jsonb)`, [JSON.stringify({ expected_version: v, participants: [part()] })])).toMatch(/permission denied/i);
+  });
+  it('rechaza identificadores, nombres y colores no válidos', async () => {
+    await as('authenticated', ADMIN, async () => {
+      for (const bad of [part({ id: 'mom' }), part({ id: 'A b' }), part({ id: 'x' }), part({ name: '' }), part({ name: 'x'.repeat(31) }), part({ color: 'rojo' }), part({ color: '#12345' })]) {
+        await expect(call({ expected_version: await version(), participants: [bad] }), JSON.stringify(bad)).rejects.toThrow(/INVALID/);
+      }
+    });
+    const r = await db.query('select 1 from public.participants where id = $1', ['alejandro']);
+    expect(r.rows).toHaveLength(0);
+  });
+  it('el administrador añade a Alejandro y reconstruye la rotación con él', async () => {
+    const order = [...ORDER, 'alejandro'];
+    const before = await loadState(ORDER);
+    const { addRotationMember } = await import('../../src/domain');
+    const res = addRotationMember(before, { id: 'alejandro', afterId: null, from: addDays(TODAY, 1), startPerson: 'alejandro' }, { today: TODAY, names: { alejandro: 'Alejandro' } });
+    const plan = buildPlan(before, res.state, res.event, { today: TODAY });
+    await as('authenticated', ADMIN, async () => {
+      await call({ ...payload(await version(), plan), participants: [part()] });
+    });
+    const shifts = await loadShifts();
+    expect(shifts.find((s) => s.date === addDays(TODAY, 1))!.assignee).toBe('alejandro');
+    expect((await db.query<{ id: string }>('select id from public.participants where in_rotation order by sort_order')).rows.map((x) => x.id)).toEqual(order);
+    await as('anon', null, async () => {
+      const c = (await db.query<{ c: any }>('select public.get_calendar($1) as c', [token])).rows[0]!.c;
+      expect(c.participants.map((p: any) => p.id)).toContain('alejandro');
+    });
+  });
+  it('guarda y publica morning_by', async () => {
+    const { cookedInMorning } = await import('../../src/domain');
+    let st: State = await loadState([...ORDER, 'alejandro']);
+    const free = st.shifts.filter((x) => x.date >= addDays(TODAY, 2) && x.date < addDays(TODAY, 40));
+    const d1 = free.find((x, i) => x.kind === 'rotation' && x.status === 'scheduled' && free[i + 1]?.kind === 'rotation' && free[i + 1]?.status === 'scheduled')!.date;
+    const d2 = addDays(d1, 1);
+    const sk = skipDay(st, d1, null, { today: TODAY });
+    await as('authenticated', ADMIN, async () => { await call(payload(await version(), buildPlan(st, sk.state, sk.event, { today: TODAY }))); });
+    st = await loadState([...ORDER, 'alejandro']);
+    const m = cookedInMorning(st, d2, null, { today: TODAY });
+    await as('authenticated', ADMIN, async () => { await call(payload(await version(), buildPlan(st, m.state, m.event, { today: TODAY }))); });
+    const row = (await loadShifts()).find((s) => s.date === d2)!;
+    expect(row.morningBy).toBeTruthy();
+    await as('anon', null, async () => {
+      const c = (await db.query<{ c: any }>('select public.get_calendar($1) as c', [token])).rows[0]!.c;
+      expect(c.shifts.find((s: any) => s.date === d2).morning_by).toBe(row.morningBy);
+    });
+  });
+});
+
+describe('script reset_calendar.sql (empezar de cero)', () => {
+  it('borra todo el calendario pero conserva integrantes, admin y enlace; luego se puede reconfigurar', async () => {
+    await db.exec(readFileSync('supabase/reset_calendar.sql', 'utf8'));
+    expect((await db.query('select 1 from public.shifts')).rows).toHaveLength(0);
+    expect((await db.query('select 1 from public.change_log')).rows).toHaveLength(0);
+    expect((await db.query('select 1 from public.admins')).rows).toHaveLength(1);
+    expect((await db.query('select 1 from public.participants')).rows.length).toBeGreaterThanOrEqual(6);
+    expect((await db.query<{ share_token: string }>('select share_token from public.app_settings')).rows[0]!.share_token).toBe(token);
+    // los bloqueos siguen activos tras el script
+    await expect(db.exec(`insert into public.change_log (type, summary) values ('x','y'); delete from public.change_log`)).rejects.toThrow();
+    // y se puede configurar una rotación nueva con Alejandro
+    const order = [...ORDER, 'alejandro'];
+    const st = setupRotation(order, 'alejandro', { today: TODAY }, 30);
+    const plan = buildPlan({ order, shifts: [], absences: [], comps: [] }, st.state, st.event, { today: TODAY });
+    await as('authenticated', ADMIN, async () => { await call(payload(await version(), plan)); });
+    expect((await loadShifts())[0]!.assignee).toBe('alejandro');
   });
 });

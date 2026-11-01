@@ -62,6 +62,7 @@ export function Calendar({ month, state, people, today, canEdit, selected, onSel
     if (s?.kind === 'manual') tags.push({ k: 'man', cls: 'cover', text: s.assignee === 'mom' ? `cubre a ${people[s.original]?.name ?? ''}` : `era ${people[s.original]?.name ?? ''}`, icon: 'swap' });
     if (s?.generatesComp) tags.push({ k: 'gen', cls: 'comp', text: 'Debe compensar' });
     if (s?.status === 'done') tags.push({ k: 'done', cls: 'done', text: 'Hecha', icon: 'check' });
+    if (s?.morningBy) tags.push({ k: 'morn', cls: 'done', text: `Mañana: ${people[s.morningBy]?.name ?? ''}`, icon: 'check' });
     if (s?.status === 'skipped') tags.push({ k: 'skip', cls: 'skip', text: 'Nadie cocinó' });
     // Para no saturar, la etiqueta "fuera" solo aparece el primer día de la ausencia y cada lunes.
     for (const p of absentOn.get(d) ?? []) {

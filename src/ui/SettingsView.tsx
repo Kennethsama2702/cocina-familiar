@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { MOM, addDays, rebuildFuture, setupRotation, formatLong } from '../domain';
+import { MOM, Participant, addDays, addRotationMember, orderWith, rebuildFuture, setupRotation, formatLong } from '../domain';
 import { Snapshot, rotateShareToken } from '../data/repository';
-import { Confirm, Icon, People } from './common';
+import { Confirm, Dialog, Icon, People, Avatar } from './common';
 import { Run } from './DayPanel';
 
 export function shareUrl(token: string) {
@@ -16,11 +16,13 @@ export function SettingsView({ snap, people, busy, run, saveSettings, reload, no
   const url = snap.shareToken ? shareUrl(snap.shareToken) : '';
   const [confirmToken, setConfirmToken] = useState(false);
   const [working, setWorking] = useState(false);
-  const [from, setFrom] = useState(snap.today);
+  const todayRow = snap.state.shifts.find((x) => x.date === snap.today);
+  const [from, setFrom] = useState(todayRow && todayRow.status !== 'scheduled' ? addDays(snap.today, 1) : snap.today);
   const [start, setStart] = useState(snap.state.order[0] ?? '');
   const [reason, setReason] = useState('');
   const [err, setErr] = useState('');
   const [confirmRebuild, setConfirmRebuild] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(url); notify('ok', 'Enlace copiado.'); } catch { notify('err', 'No se pudo copiar; selecciónalo manualmente.'); }
@@ -31,7 +33,7 @@ export function SettingsView({ snap, people, busy, run, saveSettings, reload, no
     catch (e) { notify('err', (e as Error).message); } finally { setWorking(false); }
   };
   const doRebuild = async () => {
-    const ok = await run((s, c) => rebuildFuture(s, from, start, reason, c), 'Rotación reconstruida.');
+    const ok = await run((s, c) => rebuildFuture(s, from, start, reason.trim() || 'Rotación nueva', c), 'Rotación nueva generada desde esa fecha.');
     if (ok) { setConfirmRebuild(false); setReason(''); }
   };
 
@@ -63,20 +65,39 @@ export function SettingsView({ snap, people, busy, run, saveSettings, reload, no
       </section>
 
       <section className="card stack">
+        <h2>Integrantes de la rotación</h2>
+        <div className="stack-sm">
+          {snap.state.order.map((id) => (
+            <div key={id} className="row"><Avatar person={people[id]} small /><span className="grow">{people[id]?.name}</span></div>
+          ))}
+        </div>
+        <p className="muted small">Al añadir a alguien, la rotación se vuelve a generar desde la fecha que elijas con el nuevo orden. Los días pasados no cambian.</p>
+        <button className="btn" onClick={() => setAdding(true)} disabled={busy}><Icon name="plus" /> Añadir integrante</button>
+      </section>
+
+      <section className="card stack">
         <h2>Reglas de la rotación</h2>
         <p className="muted small">Orden: {snap.state.order.map((id) => people[id]?.name).join(' → ')} → … y se repite. Zona horaria: America/Guayaquil (la decide el servidor). Mamá no forma parte del orden: sus excepciones desplazan un día toda la rotación posterior.</p>
         <p className="muted small">Viajes: quien está de viaje sale de la fila; los siguientes se adelantan y quien viajó recupera su turno al volver (seguidos si perdió más de uno). Si mamá cubre el turno de quien viaja, es un reemplazo y nada se mueve. No hay azar.</p>
         <details>
-          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Reiniciar la rotación desde una fecha</summary>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Empezar de cero (borrar la rotación)</summary>
+          <div className="note warn" style={{ marginTop: 12 }}>
+            Borrar <strong>toda</strong> la rotación, incluidos los días pasados, no se puede hacer desde la app: los días pasados están bloqueados a propósito.
+            Si de verdad quieres empezar de cero, ejecuta el archivo <span className="mono">supabase/reset_calendar.sql</span> en el SQL Editor de Supabase (paso a paso en el README).
+            Si solo quieres borrar desde hoy en adelante y conservar lo anterior, usa “Borrar la rotación desde hoy y empezar una nueva”.
+          </div>
+        </details>
+        <details>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Borrar la rotación desde hoy y empezar una nueva</summary>
           <div className="stack" style={{ marginTop: 12 }}>
-            <div className="note warn">Descarta excepciones de mamá y coberturas posteriores a esa fecha y vuelve a generar la secuencia. Los días pasados nunca se tocan. Úsalo solo para corregir el orden.</div>
+            <div className="note warn">Borra todo lo programado desde esa fecha en adelante (excepciones de mamá, coberturas, cambios) y genera una rotación nueva con el orden actual. Lo anterior a esa fecha no se toca. Si hoy ya tiene un registro, empieza mañana.</div>
             <div className="row wrap">
               <label className="field grow">Desde<input type="date" value={from} min={snap.today} onChange={(e) => setFrom(e.target.value)} /></label>
               <label className="field grow">Empieza<select value={start} onChange={(e) => setStart(e.target.value)}>{snap.state.order.map((id) => <option key={id} value={id}>{people[id]?.name}</option>)}</select></label>
             </div>
-            <label className="field">Motivo <span className="hint">Obligatorio</span><textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} /></label>
+            <label className="field">Motivo <span className="hint">Opcional</span><textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} /></label>
             {err && <p className="error-text" role="alert">{err}</p>}
-            <button className="btn danger" onClick={() => { if (!reason.trim()) return setErr('Indica el motivo.'); setErr(''); setConfirmRebuild(true); }}>Reconstruir rotación</button>
+            <button className="btn danger" onClick={() => { setErr(''); setConfirmRebuild(true); }}>Borrar y generar rotación nueva</button>
           </div>
         </details>
       </section>
@@ -86,6 +107,7 @@ export function SettingsView({ snap, people, busy, run, saveSettings, reload, no
         <button className="btn" onClick={onLogout}><Icon name="logout" /> Cerrar sesión</button>
       </section>
 
+      {adding && <AddMemberDialog snap={snap} people={people} busy={busy} run={run} onClose={() => setAdding(false)} />}
       {confirmToken && <Confirm title="¿Generar un enlace nuevo?" danger confirmLabel="Generar enlace nuevo" busy={working} onCancel={() => setConfirmToken(false)} onConfirm={() => void regenerate()}
         body="El enlace actual dejará de funcionar y tendrás que compartir el nuevo con la familia." />}
       {confirmRebuild && <Confirm title="¿Reconstruir la rotación?" danger confirmLabel="Reconstruir" busy={busy} onCancel={() => setConfirmRebuild(false)} onConfirm={() => void doRebuild()}
@@ -111,5 +133,84 @@ export function SetupView({ snap, people, busy, run }: { snap: Snapshot; people:
       <button className="btn primary" disabled={busy || !first} onClick={() => void go()}>{busy ? 'Creando…' : 'Crear calendario'}</button>
       <p className="muted small">Mañana ({formatLong(addDays(snap.today, 1))}) seguirá {people[order[(order.indexOf(first) + 1) % order.length]!]?.name}.</p>
     </div></div>
+  );
+}
+
+const COLORS = ['#7C5CBF', '#2E9CCA', '#C2557A', '#5B8C3A', '#D2691E', '#3F7F8C'];
+
+function slug(name: string, taken: Set<string>): string {
+  const base = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20) || 'persona';
+  let id = base.length < 2 ? `${base}_` : base;
+  for (let i = 2; taken.has(id) || id === MOM; i++) id = `${base}_${i}`.slice(0, 24);
+  return id;
+}
+
+function AddMemberDialog({ snap, people, busy, run, onClose }: { snap: Snapshot; people: People; busy: boolean; run: Run; onClose: () => void }) {
+  const order = snap.state.order;
+  const [name, setName] = useState('');
+  const [color, setColor] = useState(COLORS[order.length % COLORS.length]!);
+  const [after, setAfter] = useState<string>(order[order.length - 1] ?? '');
+  const [from, setFrom] = useState(addDays(snap.today, 1));
+  const [startAuto, setStartAuto] = useState(true);
+  const [startPerson, setStartPerson] = useState('');
+  const [err, setErr] = useState('');
+  const id = slug(name.trim(), new Set(Object.keys(people)));
+  const trimmed = name.trim();
+  const newOrder = orderWith(order, id, after || null);
+  // Por defecto, quien ya cocinaba ese día sigue cocinando (el nuevo integrante entra después en la fila).
+  const current = snap.state.shifts.find((x) => x.date === from);
+  const defaultStart = current && current.slot && order.includes(current.slot) ? current.slot : order[0]!;
+  const start = startAuto ? defaultStart : startPerson || defaultStart;
+  const nameMap = { ...Object.fromEntries(Object.values(people).map((p) => [p.id, p.name])), [id]: trimmed || 'Nuevo' };
+  const preview = (() => {
+    if (!trimmed) return null;
+    try {
+      const r = addRotationMember(snap.state, { id, afterId: after || null, from, startPerson: start }, { today: snap.today, names: nameMap });
+      return Array.from({ length: 8 }, (_, i) => r.state.shifts.find((x) => x.date === addDays(from, i))).filter(Boolean).map((x) => ({ date: x!.date, who: x!.assignee }));
+    } catch (e) { return (e as Error).message; }
+  })();
+  const submit = async () => {
+    if (trimmed.length < 1 || trimmed.length > 30) return setErr('Escribe un nombre de 1 a 30 caracteres.');
+    if (Object.values(people).some((p) => p.name.toLowerCase() === trimmed.toLowerCase())) return setErr('Ya existe alguien con ese nombre.');
+    if (from < snap.today) return setErr('La fecha no puede ser pasada.');
+    setErr('');
+    const members: Participant[] = newOrder.map((pid, i) => pid === id
+      ? { id, name: trimmed, color, inRotation: true, sortOrder: i + 1 }
+      : { ...people[pid]!, sortOrder: i + 1 });
+    const ok = await run((s, c) => addRotationMember(s, { id, afterId: after || null, from, startPerson: start }, { ...c, names: nameMap }),
+      `${trimmed} se incorporó a la rotación.`, undefined, members);
+    if (ok) onClose();
+  };
+  return (
+    <Dialog title="Añadir integrante" onClose={onClose}>
+      <form className="stack" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <label className="field">Nombre<input value={name} onChange={(e) => setName(e.target.value)} maxLength={30} data-autofocus placeholder="Alejandro" /></label>
+        <div className="field">Color
+          <div className="row wrap">{COLORS.map((c) => (
+            <label key={c} className="opt" style={{ padding: 4 }}><input type="radio" name="col" checked={color === c} onChange={() => setColor(c)} aria-label={c} /><span className="avatar sm" style={{ ['--c' as string]: c }} /></label>
+          ))}</div>
+        </div>
+        <label className="field">Va después de
+          <select value={after} onChange={(e) => setAfter(e.target.value)}>
+            {order.map((pid) => <option key={pid} value={pid}>{people[pid]?.name}{pid === order[order.length - 1] ? ' (al final)' : ''}</option>)}
+          </select>
+        </label>
+        <label className="field">Desde el día<input type="date" min={snap.today} value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label className="field">Ese día cocina
+          <select value={start} onChange={(e) => { setStartAuto(false); setStartPerson(e.target.value); }}>
+            {newOrder.map((pid) => <option key={pid} value={pid}>{pid === id ? (trimmed || 'El nuevo integrante') : people[pid]?.name}</option>)}
+          </select>
+        </label>
+        {preview && (
+          <div className="note" data-testid="member-preview">
+            <strong>Así quedaría:</strong>{' '}
+            {typeof preview === 'string' ? preview : preview.map((x) => `${x.date.slice(8)}: ${nameMap[x.who] ?? x.who}`).join(' · ')}
+          </div>
+        )}
+        <p className="muted small">Se reconstruye la rotación futura desde esa fecha (excepciones de mamá y coberturas posteriores se descartan; los viajes registrados se respetan).</p>
+        {err && <p className="error-text" role="alert">{err}</p>}
+        <div className="row between"><button type="button" className="btn" onClick={onClose} disabled={busy}>Cancelar</button><button className="btn primary" disabled={busy || !trimmed}>{busy ? 'Guardando…' : 'Añadir a la rotación'}</button></div>
+      </form>
+    </Dialog>
   );
 }

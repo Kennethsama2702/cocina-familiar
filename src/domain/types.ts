@@ -41,6 +41,8 @@ export interface Shift {
   generatesComp: string | null;
   /** Compensación que se salda con este turno. */
   settlesComp: string | null;
+  /** Quien cocinó por la mañana de este día el turno pendiente del día anterior (nadie cocinó anoche). */
+  morningBy: PersonId | null;
 }
 
 export interface Absence {
@@ -137,4 +139,6 @@ export interface Plan {
   comps: Compensation[];
   event: ChangeEvent | null;
   settings?: { rotation_start?: string; show_history?: boolean; show_reasons?: boolean };
+  /** Integrantes nuevos o reordenados (se guardan en la misma transacción). */
+  participants?: Participant[];
 }

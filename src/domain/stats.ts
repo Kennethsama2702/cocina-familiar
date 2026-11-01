@@ -37,7 +37,18 @@ export function computeStats(state: State, ctx: Ctx): Record<PersonId, PersonSta
     out[id] = { person: id, assigned: 0, done: 0, coveredForOthers: 0, notDoneByMe: 0, upcoming30: 0, owes: 0, isOwed: 0 };
   }
   const horizon = addDays(ctx.today, 30);
-  for (const s of state.shifts) {
+  for (let i = 0; i < state.shifts.length; i++) {
+    const s = state.shifts[i]!;
+    // Cocinó por la mañana el turno pendiente de ayer: cuenta como asignado y realizado de esa persona (una vez).
+    if (s.morningBy && s.date <= ctx.today) {
+      const owner = state.shifts[i - 1]?.original; // el turno pendiente era el del día anterior ("nadie cocinó")
+      if (owner && out[owner]) out[owner]!.assigned++;
+      if (out[s.morningBy]) {
+        out[s.morningBy]!.done++;
+        if (owner && owner !== s.morningBy && owner !== MOM) out[s.morningBy]!.coveredForOthers++;
+      }
+      if (owner && owner !== s.morningBy && out[owner] && owner !== MOM) out[owner]!.notDoneByMe++;
+    }
     if (s.status === 'skipped') continue; // nadie cocinó: el turno se trasladó, no cuenta ni como asignado ni como hecho
     if (resolved(s, ctx) && s.date <= ctx.today) {
       const orig = out[s.original];

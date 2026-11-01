@@ -95,7 +95,7 @@ export function useController(route: Route) {
   const ctx: Ctx | null = snap ? { today: snap.today, names } : null;
 
   /** Ejecuta una operación de dominio y la guarda de forma atómica en el servidor. */
-  const run = useCallback(async (op: (state: State, ctx: Ctx) => OpResult, okText: string, settings?: Plan['settings']): Promise<boolean> => {
+  const run = useCallback(async (op: (state: State, ctx: Ctx) => OpResult, okText: string, settings?: Plan['settings'], participants?: Participant[]): Promise<boolean> => {
     if (!snap || snap.role !== 'admin') return false;
     setBusy(true);
     try {
@@ -103,6 +103,7 @@ export function useController(route: Route) {
       const result = op(snap.state, c);
       const plan = buildPlan(snap.state, result.state, result.event, c);
       if (settings) plan.settings = settings;
+      if (participants) plan.participants = participants;
       await applyPlan(plan, snap.settings.version);
       await load();
       notify('ok', okText);

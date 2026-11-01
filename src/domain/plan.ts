@@ -14,7 +14,8 @@ function sameShift(a: Shift, b: Shift): boolean {
     a.reason === b.reason &&
     a.absenceId === b.absenceId &&
     a.generatesComp === b.generatesComp &&
-    a.settlesComp === b.settlesComp
+    a.settlesComp === b.settlesComp &&
+    a.morningBy === b.morningBy
   );
 }
 

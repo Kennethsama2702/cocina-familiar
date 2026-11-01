@@ -4,7 +4,7 @@
  * Uso:  npx tsx tests/e2e/local-backend.ts   (puerto 54321)
  */
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { btree_gist } from '@electric-sql/pglite/contrib/btree_gist';
 
@@ -23,7 +23,7 @@ export async function startBackend(port = 54321) {
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('app.uid', true), '')::uuid $$;
     grant usage on schema public, auth to anon, authenticated;
     grant execute on function auth.uid() to anon, authenticated;`);
-  await db.exec(readFileSync(new URL('../../supabase/migrations/0001_init.sql', import.meta.url), 'utf8'));
+  for (const f of readdirSync(new URL('../../supabase/migrations/', import.meta.url)).sort()) await db.exec(readFileSync(new URL(`../../supabase/migrations/${f}`, import.meta.url), 'utf8'));
   await db.exec(`insert into auth.users values ('${ADMIN}','admin@familia.test'); insert into public.admins (user_id) values ('${ADMIN}')`);
   const token = (await db.query<{ share_token: string }>('select share_token from public.app_settings')).rows[0]!.share_token;
 
